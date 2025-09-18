@@ -12,10 +12,8 @@ resources:
       tasks:
         - task_key: create_uc_objects
           notebook_task:
-            notebook_path: ${workspace.file_path}/notebooks/create_uc_objects.py
+            notebook_path: ${workspace.file_path}/notebooks/create_uc_objects
             source: WORKSPACE
-          job_cluster_key: medisure_cluster
-      job_clusters:
-        - job_cluster_key: medisure_cluster
-          new_cluster: ${var.my_cluster}
+      performance_target: PERFORMANCE_OPTIMIZED
+
             
