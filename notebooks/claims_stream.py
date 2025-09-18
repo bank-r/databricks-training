@@ -50,7 +50,8 @@ parsed_df = (
           F.col("parsed.ICD10Codes").alias("icd10_codes"),
           F.col("parsed.CPTCodes").alias("cpt_codes"),
           F.to_timestamp(F.col("parsed.EventTimestamp")).alias("event_timestamp"),
-          F.col("_ingest_ts").alias("_ingest_ts")
+          F.col("_ingest_ts").alias("_ingest_ts"),
+          F.col("_source_file").alias("_source_file")
       )
 )
 clean_df = (parsed_df
@@ -60,7 +61,7 @@ clean_df = (parsed_df
     .withColumn("icd10_codes", F.split("icd10_codes", ";"))
     .withColumn("cpt_codes", F.split("cpt_codes", ";"))
     .withColumn("event_timestamp", F.to_timestamp("event_timestamp"))
-    .withColumn("amount_valid", F.col("amount") >= 0)
+    .withColumn("amount_valid", F.col("amount").isNotNull() & (F.col("amount") >= 0))
     .withColumn("status_valid", F.col("status").isin("SUBMITTED","PENDING","PAID","REJECTED","APPROVED"))
     .withColumn("member_valid", F.col("member_id").isNotNull())
     .withColumn("provider_valid", F.col("provider_id").isNotNull())
@@ -73,7 +74,7 @@ clean_df = clean_df.withColumn(
     "failures",
     F.array(
         *[
-            F.when(~F.col("amount_valid"), F.lit("AMOUNT_NEGATIVE")).otherwise(F.lit(None)),
+            F.when(~F.col("amount_valid"), F.lit("INVALID_AMOUNT")).otherwise(F.lit(None)),
             F.when(~F.col("status_valid"), F.lit("INVALID_STATUS")).otherwise(F.lit(None)),
             F.when(~F.col("member_valid"), F.lit("MISSING_MEMBERID")).otherwise(F.lit(None)),
             F.when(~F.col("provider_valid"), F.lit("MISSING_PROVIDERID")).otherwise(F.lit(None)),
@@ -110,4 +111,14 @@ window = Window.partitionBy("claim_id").orderBy(F.col("event_timestamp").desc_nu
 deduped = valid_df.withColumn("rn", F.row_number().over(window)).filter("rn = 1").drop("rn")
 
 # write to silver
-deduped.write.format("delta").mode("overwrite").saveAsTable("medisure_dev.silver.claims_stream")
+deduped.createOrReplaceTempView("stg_claims_stream")
+
+spark.sql(f"""
+MERGE INTO medisure_dev.silver.claims_stream AS t
+USING stg_claims_stream AS s
+ON t.claim_id = s.claim_id
+WHEN MATCHED AND (s.event_timestamp > t.event_timestamp OR t.event_timestamp IS NULL) THEN
+  UPDATE SET *
+WHEN NOT MATCHED THEN
+  INSERT *
+""")

@@ -52,7 +52,7 @@ clean_df = (df
     .withColumn("icd10_codes", F.split(F.upper("icd10_codes"), ";"))
     .withColumn("cpt_codes", F.split("cpt_codes", ";"))
     .withColumn("ingest_timestamp", F.to_timestamp("ingest_timestamp"))
-    .withColumn("amount_valid", F.col("amount") >= 0)
+    .withColumn("amount_valid", F.col("amount").isNotNull() & (F.col("amount") >= 0))
     .withColumn("dates_valid", F.col("service_date") <= F.col("claim_date"))
     .withColumn("status_valid", F.col("status").isin("SUBMITTED","PENDING","PAID","REJECTED","APPROVED"))
     .withColumn("member_valid", F.col("member_id").isNotNull())
@@ -66,7 +66,7 @@ clean_df = clean_df.withColumn(
     "failures",
     F.array(
         *[
-            F.when(~F.col("amount_valid"), F.lit("AMOUNT_NEGATIVE")).otherwise(F.lit(None)),
+            F.when(~F.col("amount_valid"), F.lit("INVALID_AMOUNT")).otherwise(F.lit(None)),
             F.when(~F.col("dates_valid"), F.lit("SERVICE_AFTER_CLAIM_DATE")).otherwise(F.lit(None)),
             F.when(~F.col("status_valid"), F.lit("INVALID_STATUS")).otherwise(F.lit(None)),
             F.when(~F.col("member_valid"), F.lit("MISSING_MEMBERID")).otherwise(F.lit(None)),
@@ -104,4 +104,14 @@ window = Window.partitionBy("claim_id").orderBy(F.col("ingest_timestamp").desc_n
 deduped = valid_df.withColumn("rn", F.row_number().over(window)).filter("rn = 1").drop("rn")
 
 # write to silver
-deduped.write.format("delta").mode("overwrite").saveAsTable("medisure_dev.silver.claims_batch")
+deduped.createOrReplaceTempView("stg_claims_batch")
+
+spark.sql(f"""
+MERGE INTO medisure_dev.silver.claims_batch AS t
+USING stg_claims_batch AS s
+ON t.claim_id = s.claim_id
+WHEN MATCHED AND (s.ingest_timestamp > t.ingest_timestamp OR t.ingest_timestamp IS NULL) THEN
+  UPDATE SET *
+WHEN NOT MATCHED THEN
+  INSERT *
+""")
