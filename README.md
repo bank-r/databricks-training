@@ -16,6 +16,9 @@ The full problem statement is described at [Capstone Project Statement - Healthc
 
 ```text
 databricks-training
+├── .github
+│   ├── workflows
+│   ├── deploy-databricks.yml
 ├── data
 │   ├── claims_batch.csv
 │   ├── claims_stream.json
@@ -28,10 +31,12 @@ databricks-training
 ├── functions
 │   └── utils.py
 ├── notebooks
-│   ├── 00_init
-│   ├── 01_bronze
-│   ├── 02_silver
-│   └── 03_gold
+│   ├── claims_batch.py
+│   ├── claims_stream.py
+│   ├── create_uc_objects.py
+│   ├── diagnosis.py
+│   ├── members.py
+│   └── providers.py
 ├── problem
 │   └── Capstone Project Statement - Healthcare Claims Quality & Compliance Platform.pdf
 ├── resources
@@ -64,7 +69,7 @@ databricks-training
 
 - **functions**/: reusable Python helpers imported by notebooks.
 
-- **notebooks**/: lakehouse pipelines by layer (00_init, 01_bronze, 02_silver, 03_gold).
+- **notebooks**/: lakehouse pipelines by file type to manage end to end
 
 - **problem**/: capstone problem statement.
 
@@ -107,9 +112,25 @@ Download the [Azure CLI for Windows](https://learn.microsoft.com/en-us/cli/azure
 
 Download the [ODBC Driver for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server?view=sql-server-ver17). The one natively installed with windows is obsolete.
 
-## Set up Azure resources
+## Set up Azure & Databricks resources
 
-## Set up Databricks resources
+Assuming free account has been created with a new subscription
+> Infrastructure as code under folder setup/
+
+1. create resource groups
+2. create storage account
+3. create databricks workspace
+4. create azure sql to store member.csv data
+5. create databricks connector allow databricks to access storage account
+6. create storage container for landing and managed delta files used by unity catalog
+7. create key vault to store secrets
+8. create databricks objects
+   1. credentials (access to adls gen2 container)
+   2. external location (define access to adls gen2 container via volume)
+   3. secrets (secure access to get password of azure sql)
+   4. service principals (github sp to deploy and workflow sp to run jobs)
+   5. tokens (grant github service principal access to workspace from github)
+9. load member.csv data into azure sql to simulate jdbc connection
 
 ## Macro Architecture
 
@@ -118,3 +139,115 @@ Download the [ODBC Driver for SQL Server](https://learn.microsoft.com/en-us/sql/
 ## High level ETL Workflow
 
 ![high level etl workflow](docs/images/high-level-etl-workflow.excalidraw.png)
+
+## Unity Catalog
+
+- Organized by schema
+  - bronze
+    - raw
+  - silver
+    - clean
+  - gold
+    - analytics
+  - ops
+    - for autoloader checkpoints, schemas, streams
+
+![uc-bronze](docs/images/uc-bronze.png)
+![uc-silver](docs/images/uc-silver.png)
+![uc-gold](docs/images/uc-gold.png)
+![uc-ops](docs/images/uc-ops.png)
+
+## Data Lineage
+
+- bronze tables have metadata fields to show file name and ingest date
+
+![data-lineage](docs/images/data-lineage.png)
+
+## Data Quality
+
+Overview of the raw files
+
+- claims_batch.csv – 500 rows with 13 columns: ClaimID, MemberID, ProviderID, ClaimDate, ServiceDate, Amount, Status, ICD10Codes (semicolon‑separated), CPTCodes (semicolon‑separated), ClaimType, SubmissionChannel, Notes and IngestTimestamp. ClaimID duplicates (~193 duplicates) must be deduplicated using the latest IngestTimestamp.
+
+- claims_stream.json – newline‑delimited JSON; each record has ClaimID, MemberID, ProviderID, ClaimDate, Amount, Status, ICD10Codes, CPTCodes and EventTimestamp. Duplicates (~186) should be deduped using the latest EventTimestamp.
+
+- diagnosis_ref.csv – mapping of ICD‑10 codes to descriptions. Codes should be trimmed/upper‑cased and unique.
+
+- members.csv – 500 members with MemberID, Name, DOB, Gender, Region, PlanType, EffectiveDate, Email, IsActive and LastUpdated. IsActive is 0/1; a few emails are missing; there are no duplicate MemberIDs.
+
+- providers.json – newline‑delimited JSON; each record has ProviderID, Name, Specialties (array), Locations (array of objects with Address, City, State), IsActive, TIN and LastVerified. No duplicate ProviderIDs, but the nested arrays must be exploded and flattened.
+
+- Invalid data are isolated in a dedicated table
+![data-quality](docs/images/data-quality.png)
+
+## Security
+
+- Unity Catalog Grants
+  - analysts only have access to gold schema
+![grants for analysts](docs/images/uc-analysts-grants.png)
+- Masking member emails
+  - only admins with elevated rights can see PII data.
+
+```sql
+CREATE OR REPLACE FUNCTION medisure_dev.silver.mask_email(email STRING)
+  RETURN CASE
+           WHEN is_member('admins') THEN email
+           ELSE
+             CONCAT(
+               SUBSTRING(email, 1, 1),
+               '*****',
+               SUBSTRING(email, instr(email, '@'))
+             )
+         END;
+
+-- Apply the mask to the email column of the members table.
+ALTER TABLE medisure_dev.silver.members
+ALTER COLUMN email SET MASK medisure_dev.silver.mask_email;
+
+-- Mask DOB to the first day of the same year for non-admins
+CREATE OR REPLACE FUNCTION medisure_dev.silver.mask_dob(dob DATE)
+  RETURN CASE
+           WHEN dob IS NULL THEN NULL
+           WHEN is_member('admins') THEN dob
+           ELSE make_date(year(dob), 1, 1)   -- stays a DATE
+         END;
+
+-- Apply it to the members table (adjust column name if needed)
+ALTER TABLE medisure_dev.silver.members
+ALTER COLUMN dob SET MASK medisure_dev.silver.mask_dob;
+```
+
+## Github CI/CD & Databricks Asset Bundles
+
+- [Databricks Asset Bundles](https://learn.microsoft.com/en-us/azure/databricks/dev-tools/bundles/) are used to manage deployment of code and resources.
+- Using service principal **github deploy - dev** and its token.
+- [databricks.yml](databricks.yml) is the configuration file for Databricks Asset Bundles
+- [deploy-databricks.yml](.github\workflows\deploy-databricks.yml) is the configuration file for GitHub actions
+![github-secrets](docs/images/github-secrets.png)
+![github-actions](docs/images/github-actions.png)
+
+## Databricks Jobs
+
+- Schedule
+  - every minute instead of continuous
+- Alerting
+  - When job fails, email alert is sent.
+![jobs-alerting](docs/images/jobs-alerting.png)
+- Retry
+  - When job fails, it retries immediately 3-4 times (managed by serverless auto-optimization)
+
+## Analytics
+
+- Examples:
+
+> Fraud Analysis by Plan
+
+![analytics-1](docs/images/analytics-1.png)
+
+> Count by Provider_Id
+
+![analytics-2](docs/images/analytics-2.png)
+
+> Amount by Month
+
+![analytics-3](docs/images/analytics-3.png)
