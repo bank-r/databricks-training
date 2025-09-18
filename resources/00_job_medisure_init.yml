@@ -1,0 +1,21 @@
+resources:
+  jobs:
+    medisure_00_init:
+      name: medisure_00_init
+      run_as:
+        service_principal_name: ${var.service_principal}
+      permissions:
+        - level: CAN_MANAGE_RUN
+          service_principal_name: ${var.service_principal}
+      tags:
+        medisure: ""
+      tasks:
+        - task_key: create_uc_objects
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/create_uc_objects.py
+            source: WORKSPACE
+          job_cluster_key: medisure_cluster
+      job_clusters:
+        - job_cluster_key: medisure_cluster
+          new_cluster: ${var.my_cluster}
+            

@@ -1,0 +1,39 @@
+resources:
+  jobs:
+    medisure_01_orchestrate:
+      name: medisure_01_orchestrate
+      schedule:
+        quartz_cron_expression: 16 * * * * ?
+        timezone_id: UTC
+        pause_status: ${var.pause_status}
+      run_as:
+        service_principal_name: ${var.service_principal}
+      permissions:
+        - level: CAN_MANAGE_RUN
+          service_principal_name: ${var.service_principal}
+      tags:
+        medisure: ""
+      tasks:
+        - task_key: claims_batch
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/claims_batch
+            source: WORKSPACE
+        - task_key: members
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/members
+            source: WORKSPACE
+        - task_key: claims_stream
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/claims_stream
+            source: WORKSPACE
+        - task_key: providers
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/providers
+            source: WORKSPACE
+        - task_key: diagnosis
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/diagnosis
+            source: WORKSPACE
+      queue:
+        enabled: true
+      performance_target: PERFORMANCE_OPTIMIZED
