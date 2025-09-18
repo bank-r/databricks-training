@@ -7,6 +7,10 @@ include:
 workspace:
   root_path: /Workspace/Users/cf166e8f-c501-486f-9e34-76ce106122ab/.bundle/${bundle.name}/${bundle.target}
 
+permissions:
+- level: CAN_MANAGE
+  group_name: medisure data engineers
+
 variables:
   my_cluster:
     description: "My cluster definition"
